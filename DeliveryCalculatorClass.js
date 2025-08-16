@@ -6,8 +6,8 @@ ymaps.modules.define(
         /** ------------------------------
          *  Configuration
          *  ------------------------------ */
-        var DELIVERY_TARIF = 20;  // ₽/₾ per km (edit as needed)
-        var MINIMUM_COST   = 500; // Min delivery cost
+        var DELIVERY_TARIF = 0.80;  // ₽/₾ per km (edit as needed)
+        var MINIMUM_COST   = 1; // Min delivery cost
 
         /** ------------------------------
          *  Helpers
