@@ -1,7 +1,7 @@
 ymaps.ready(['DeliveryCalculator']).then(function init() {
     var myMap = new ymaps.Map('map', {
-            center: [60.906882, 30.067233],
-            zoom: 9,
+            center: [42.3154, 43.3569],
+            zoom: 7,
             type: 'yandex#map',
             controls: []
         }),
