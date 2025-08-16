@@ -186,6 +186,20 @@ ymaps.modules.define(
      font-style: italic">Cost of delivery: %s rubles</span>';
 
                                 this._route = router.getPaths(); // Getting a collection of paths that make up the route.
+                                this._router = router;
+                                // Update panel quickly here too
+                                try {
+                                    var distance = ymaps.formatter.distance(router.getLength());
+                                    var seconds = (typeof router.getTime==='function') ? router.getTime() : null;
+                                    var timeText = seconds != null ? formatSecondsToHm(seconds) : null;
+                                    var dEl = document.getElementById('distanceVal');
+                                    var tEl = document.getElementById('timeVal');
+                                    var cEl = document.getElementById('costVal');
+                                    if (dEl) dEl.textContent = distance;
+                                    if (tEl) tEl.textContent = timeText || '—';
+                                    // Cost will be set below using 'price' variable if available, otherwise leave as is.
+                                } catch(e){}
+
 
                                 this._route.options.set({strokeWidth: 5, strokeColor: '0000ffff', opacity: 0.5});
                                 this._map.geoObjects.add(this._route); // Adding the route to the map.
