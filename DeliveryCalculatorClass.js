@@ -1,16 +1,3 @@
-/* DeliveryCalculatorClass.js
- * Robust DeliveryCalculator for Yandex.Maps API 2.1
- * - Builds a route between A and B
- * - Styles and fits the route
- * - Updates an on‑map info panel (#routeInfo) with Distance / Time / Cost
- * - Updates start/finish balloons with the same data and auto-opens finish balloon
- * Public API:
- *   new DeliveryCalculator(map)
- *   setPoint('start'|'finish', [lat, lon], balloonContent?)
- *   setRoute([lat, lon], [lat, lon])
- *   clearRoute()
- */
-
 ymaps.modules.define(
     'DeliveryCalculator',
     ['util.defineClass', 'vow'],
