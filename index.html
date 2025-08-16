@@ -17,9 +17,14 @@
             padding: 0;
             margin: 0;
         }
-    </style>
+    #routeInfo{position:absolute;right:12px;top:12px;background:#fff;border:1px solid #ddd;border-radius:8px;
+padding:10px 12px;font-family:Arial, sans-serif;font-size:14px;line-height:1.4;box-shadow:0 2px 8px rgba(0,0,0,.1);z-index:1000;min-width:220px}
+#routeInfo .label{color:#666}
+#routeInfo .value{font-weight:600}
+</style>
 </head>
 <body>
     <div id="map"></div>
+<div id="routeInfo"><div class="label">Route info</div><div>Distance: <span class="value" id="distanceVal">—</span></div><div>Time: <span class="value" id="timeVal">—</span></div><div>Cost: <span class="value" id="costVal">—</span></div></div>
 </body>
 </html>
