@@ -6,6 +6,7 @@ ymaps.modules.define(
          * @class DeliveryCalculator Calculating delivery cost.
          * @param {Object} map Instance of the map.
          */
+        function formatSecondsToHm(sec){ if(!sec && sec!==0) return null; sec = Math.max(0, Math.floor(sec)); var h = Math.floor(sec/3600); var m = Math.floor((sec%3600)/60); return (h>0? h + ' h ' : '') + m + ' min'; }
         function DeliveryCalculator(map) {
             this._map = map;
             this._startPoint = null;
@@ -162,7 +163,27 @@ ymaps.modules.define(
                                 var price = this.calculate(Math.round(router.getLength() / 1000)),
                                     distance = ymaps.formatter.distance(router.getLength()),
                                     message = '<span>Distance: ' + distance + '.</span><br/>' +
-                                        '<span style="font-weight: bold; font-style: italic">Cost of delivery: %s rubles</span>';
+                                        '<span style="font-weight: bold;
+                                // Try to get ETA from router; fallback to simple estimate.
+                                var seconds = null;
+                                try {
+                                    if (typeof router.getTime === 'function') { seconds = router.getTime(); }
+                                    else if (router.properties && typeof router.properties.get === 'function' && router.properties.get('duration')) {
+                                        var dur = router.properties.get('duration'); // may be {text, value}
+                                        seconds = dur && (dur.value || dur.duration || null);
+                                    }
+                                } catch(e) {}
+                                var timeText = seconds != null ? formatSecondsToHm(seconds) : null;
+                                // Update floating panel if present
+                                try {
+                                    var dEl = document.getElementById('distanceVal');
+                                    var tEl = document.getElementById('timeVal');
+                                    var cEl = document.getElementById('costVal');
+                                    if (dEl) dEl.textContent = distance;
+                                    if (tEl) tEl.textContent = timeText || '—';
+                                    if (cEl) cEl.textContent = price + ' ₾';
+                                } catch(e) {}
+     font-style: italic">Cost of delivery: %s rubles</span>';
 
                                 this._route = router.getPaths(); // Getting a collection of paths that make up the route.
 
