@@ -23,7 +23,7 @@ ymaps.modules.define(
         var d = document.getElementById('distanceVal');
         var t = document.getElementById('timeVal');
         var c = document.getElementById('costVal');
-        if (d) d.textContent = (distanceText || '—').replace(/\u00A0|&nbsp;/g, ' ');
+        if (d) d.textContent = (distanceText || '—');
         if (t) t.textContent = seconds != null ? (fmtSeconds(seconds) || '—') : '—';
         if (c) c.textContent = (price != null ? fmtMoney(price) : '—') + ' ₾';
       } catch(e) {}
