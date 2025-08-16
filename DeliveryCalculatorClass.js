@@ -1,281 +1,278 @@
+/* DeliveryCalculatorClass.js
+ * Robust DeliveryCalculator for Yandex.Maps API 2.1
+ * - Builds a route between A and B
+ * - Styles and fits the route
+ * - Updates an on‑map info panel (#routeInfo) with Distance / Time / Cost
+ * - Updates start/finish balloons with the same data and auto-opens finish balloon
+ * Public API:
+ *   new DeliveryCalculator(map)
+ *   setPoint('start'|'finish', [lat, lon], balloonContent?)
+ *   setRoute([lat, lon], [lat, lon])
+ *   clearRoute()
+ */
+
 ymaps.modules.define(
     'DeliveryCalculator',
     ['util.defineClass', 'vow'],
     function (provide, defineClass, vow) {
+
+        /** ------------------------------
+         *  Configuration
+         *  ------------------------------ */
+        var DELIVERY_TARIF = 20;  // ₽/₾ per km (edit as needed)
+        var MINIMUM_COST   = 500; // Min delivery cost
+
+        /** ------------------------------
+         *  Helpers
+         *  ------------------------------ */
+
         /**
-         * @class DeliveryCalculator Calculating delivery cost.
-         * @param {Object} map Instance of the map.
+         * Format seconds to "H h M min" or "M min".
+         * @param {number|null|undefined} sec
+         * @returns {string|null}
          */
-        function formatSecondsToHm(sec){ if(!sec && sec!==0) return null; sec = Math.max(0, Math.floor(sec)); var h = Math.floor(sec/3600); var m = Math.floor((sec%3600)/60); return (h>0? h + ' h ' : '') + m + ' min'; }
+        function formatSecondsToHm(sec) {
+            if (sec == null || isNaN(sec)) return null;
+            sec = Math.max(0, Math.floor(sec));
+            var h = Math.floor(sec / 3600);
+            var m = Math.floor((sec % 3600) / 60);
+            return (h > 0 ? (h + ' h ') : '') + m + ' min';
+        }
+
+        /**
+         * Update floating panel values if the panel exists.
+         * @param {string} distanceText
+         * @param {number} price
+         * @param {number|null} seconds
+         */
+        function updatePanel(distanceText, price, seconds) {
+            try {
+                var dEl = document.getElementById('distanceVal');
+                var tEl = document.getElementById('timeVal');
+                var cEl = document.getElementById('costVal');
+                if (dEl) dEl.textContent = distanceText || '—';
+                if (tEl) tEl.textContent = (seconds || seconds === 0) ? (formatSecondsToHm(seconds) || '—') : '—';
+                if (cEl) cEl.textContent = (price != null ? price : '—') + ' ₾';
+            } catch (e) {
+                // Silent; panel is optional
+                // console.warn('updatePanel failed', e);
+            }
+        }
+
+        /**
+         * Extract duration (seconds) from a Yandex router if possible.
+         * Tries multiple APIs because availability differs by routing mode.
+         * @param {Object} router
+         * @param {number} lengthMeters
+         * @returns {number|null}
+         */
+        function getDurationSeconds(router, lengthMeters) {
+            // 1) Direct methods (if provided by this router implementation)
+            try {
+                if (typeof router.getJamsTime === 'function') {
+                    var jt = router.getJamsTime();
+                    if (typeof jt === 'number' && jt >= 0) return jt;
+                }
+                if (typeof router.getTime === 'function') {
+                    var t = router.getTime();
+                    if (typeof t === 'number' && t >= 0) return t;
+                }
+            } catch (e) {}
+
+            // 2) Properties blob
+            try {
+                if (router.properties && typeof router.properties.get === 'function') {
+                    var dur = router.properties.get('duration'); // often {text, value}
+                    if (dur && typeof dur.value === 'number') return dur.value;
+                    if (dur && typeof dur.duration === 'number') return dur.duration;
+                }
+            } catch (e) {}
+
+            // 3) Fallback: assume 40 km/h average speed
+            var avgKmh = 40;
+            var seconds = Math.round((lengthMeters / 1000) / avgKmh * 3600);
+            return seconds;
+        }
+
+        /**
+         * Build a delivery price from km.
+         * @param {number} kmRounded
+         * @returns {number}
+         */
+        function buildPrice(kmRounded) {
+            return Math.max(kmRounded * DELIVERY_TARIF, MINIMUM_COST);
+        }
+
+        /** ------------------------------
+         *  Class
+         *  ------------------------------ */
         function DeliveryCalculator(map) {
             this._map = map;
+
             this._startPoint = null;
             this._finishPoint = null;
-            this._route = null;
-            this._startPointBalloonContent;
-            this._finishPointBalloonContent;
 
+            this._route = null;   // ymaps.GeoObjectCollection of route paths
+            this._router = null;  // original router object
+
+            this._startPointBalloonContent = '';
+            this._finishPointBalloonContent = '';
+
+            this._deferred = null;
+
+            // Allow picking/adjusting points by clicking on map.
             map.events.add('click', this._onClick, this);
         }
 
-        defineClass(DeliveryCalculator, {
+        DeliveryCalculator.prototype = defineClass({
+
             /**
-             * Setting the coordiantes and balloon contents for a point on a route.
-             * @param {String} pointType Type of point: 'start' - starting point, 'finish' - destination point.
-             * @param {Number[]} position Coordinates of the point.
-             * @param {String} content Content of the balloon point.
+             * Set a point by role.
+             * @param {'start'|'finish'} role
+             * @param {number[]} coords [lat, lon]
+             * @param {string=} balloonContent
              */
-            _setPointData: function (pointType, position, content) {
-                if (pointType == 'start') {
-                    this._startPointBalloonContent = content;
-                    this._startPoint.geometry.setCoordinates(position);
-                    this._startPoint.properties.set('balloonContentBody', "Waiting for data");
+            setPoint: function (role, coords, balloonContent) {
+                var isStart = (role === 'start');
+                var point = isStart ? this._startPoint : this._finishPoint;
+
+                if (!point) {
+                    point = new ymaps.Placemark(
+                        coords,
+                        { iconContent: isStart ? 'A' : 'B' },
+                        { draggable: true }
+                    );
+                    this._map.geoObjects.add(point);
+                    point.events.add('dragend', this._setupRoute, this);
+                    if (isStart) this._startPoint = point;
+                    else this._finishPoint = point;
                 } else {
-                    this._finishPointBalloonContent = content;
-                    this._finishPoint.geometry.setCoordinates(position);
-                    this._finishPoint.properties.set('balloonContentBody', "Waiting for data");
+                    point.geometry.setCoordinates(coords);
+                }
+
+                if (typeof balloonContent === 'string') {
+                    if (isStart) this._startPointBalloonContent = balloonContent;
+                    else this._finishPointBalloonContent = balloonContent;
                 }
             },
 
             /**
-             * Creating a new point on a route and adding it to the map.
-             * @param {String} pointType Type of point: 'start' - starting point, 'finish' - destination point.
-             * @param {Number[]} position Coordinates of the point.
+             * Convenience: set both points and build route.
+             * @param {number[]} start
+             * @param {number[]} finish
              */
-            _addNewPoint: function (pointType, position) {
-                // If a new point on a route has no coordinates assigned, let's temporarily set the coordinates which are out of the visibility area.
-                if (!position) position = [19.163570, -156.155197];
-                /**
-                 * Creating a draggable marker (the 'draggable' option).
-                 *  When dragging ends, we call the handler '_onStartDragEnd'.
-                 */
-                if (pointType == 'start' && !this._startPoint) {
-                    this._startPoint = new ymaps.Placemark(position, {iconContent: 'A'}, {draggable: true});
-                    this._startPoint.events.add('dragend', this._onStartDragEnd, this);
-                    this._map.geoObjects.add(this._startPoint);
+            setRoute: function (start, finish) {
+                this.setPoint('start', start);
+                this.setPoint('finish', finish);
+                this._setupRoute();
+            },
+
+            /**
+             * Remove current route from the map.
+             */
+            clearRoute: function () {
+                if (this._route) {
+                    try { this._map.geoObjects.remove(this._route); } catch (e) {}
+                    this._route = null;
                 }
-                if (pointType == 'finish' && !this._finishPoint) {
-                    this._finishPoint = new ymaps.Placemark(position, {iconContent: 'B'}, {
-                        draggable: true,
-                        balloonAutoPan: false
-                    });
-                    this._finishPoint.events.add('dragend', this._onFinishDragEnd, this);
-                    this._map.geoObjects.add(this._finishPoint);
-                }
+                this._router = null;
+                // Do not clear markers.
             },
 
             /**
-             * Setting the point on a route.
-             * A route point can be specified by coordinates or coordinates with an address.
-             * If the route point is set using coordinates with the address, the address becomes the content of the balloon.
-             * @param {String} pointType Type of point: 'start' - starting point, 'finish' - destination point.
-             * @param {Number[]} position Coordinates of the point.
-             * @param {String} address Address.
-             */
-            setPoint: function (pointType, position, address) {
-                if (!this._startPoint || !this._finishPoint) {
-                    this._addNewPoint(pointType, position);
-                }
-                if (!address) {
-                    this._reverseGeocode(position).then(function (content) {
-                        this._setPointData(pointType, position, content);
-                        this._setupRoute();
-                    }, this)
-                } else {
-                    this._setPointData(pointType, position, address);
-                    this._setupRoute();
-                }
-            },
-
-            /**
-             * Performing reverse geocoding (getting the address from its coordinates) for the route point.
-             * @param {Number[]} point Coordinates of the point.
-             */
-            _reverseGeocode: function (point) {
-                return ymaps.geocode(point).then(function (res) {
-                    /**
-                     * res contains a description of the found geo objects
-                     * Getting a description of the first geo object in the list in order to
-                     * show it with the delivery description when the placemark is clicked.
-                     */
-                    return res.geoObjects.get(0) &&
-                        res.geoObjects.get(0).properties.get('balloonContentBody') || '';
-                });
-
-            },
-
-            /**
-             * Performing forward geocoding (getting the coordinates from its address) for the route point.
-             * @param {String} address Address.
-             */
-            _geocode: function (address) {
-                return ymaps.geocode(address).then(function (res) {
-                    /**
-                     * res contains a description of the found geo objects
-                     * Getting a description and the coordinates of the first geo object in the list.
-                     */
-                    var balloonContent = res.geoObjects.get(0) &&
-                            res.geoObjects.get(0).properties.get("balloonContent") || '',
-                        coords = res.geoObjects.get(0) &&
-                            res.geoObjects.get(0).geometry.getCoordinates() || '';
-
-                    return [coords, balloonContent];
-                });
-
-            },
-
-            /**
-             *
-             * @param  {Number} routeLength The length of the route in kilometers.
-             * @return {Number} The cost of delivery.
-             */
-            calculate: function (routeLength) {
-                // Constants.
-                var DELIVERY_TARIF = 20, // The cost per kilometer.
-                    MINIMUM_COST = 500; // The minimal cost.
-
-                return Math.max(routeLength * DELIVERY_TARIF, MINIMUM_COST);
-            },
-
-            /**
-             * Drawing the route through the set points
-             * and making delivery calculations.
+             * Internal: build/update the route and all UI.
              */
             _setupRoute: function () {
-                // Deleting the previous route from the map.
-                if (this._route) {
-                    this._map.geoObjects.remove(this._route);
+                if (!this._startPoint || !this._finishPoint) return;
+
+                var start = this._startPoint.geometry.getCoordinates();
+                var finish = this._finishPoint.geometry.getCoordinates();
+                var startBalloon = this._startPointBalloonContent || '';
+                var finishBalloon = this._finishPointBalloonContent || '';
+
+                // Cancel previous async if pending
+                if (this._deferred && !this._deferred.promise().isResolved()) {
+                    this._deferred.reject('New request');
                 }
+                var deferred = (this._deferred = vow.defer());
 
-                if (this._startPoint && this._finishPoint) {
-                    var start = this._startPoint.geometry.getCoordinates(),
-                        finish = this._finishPoint.geometry.getCoordinates(),
-                        startBalloon = this._startPointBalloonContent,
-                        finishBalloon = this._finishPointBalloonContent;
-                    if (this._deferred && !this._deferred.promise().isResolved()) {
-                        this._deferred.reject('New request');
-                    }
-                    var deferred = this._deferred = vow.defer();
-                    // Drawing the route through the specified points.
-                    ymaps.route([start, finish])
-                        .then(function (router) {
-                            if (!deferred.promise().isRejected()) {
-                                var price = this.calculate(Math.round(router.getLength() / 1000)),
-                                    distance = ymaps.formatter.distance(router.getLength()),
-                                    message = '<span>Distance: ' + distance + '.</span><br/>' +
-                                        '<span style="font-weight: bold;
-                                // Try to get ETA from router; fallback to simple estimate.
-                                var seconds = null;
-                                try {
-                                    if (typeof router.getTime === 'function') { seconds = router.getTime(); }
-                                    else if (router.properties && typeof router.properties.get === 'function' && router.properties.get('duration')) {
-                                        var dur = router.properties.get('duration'); // may be {text, value}
-                                        seconds = dur && (dur.value || dur.duration || null);
-                                    }
-                                } catch(e) {}
-                                var timeText = seconds != null ? formatSecondsToHm(seconds) : null;
-                                // Update floating panel if present
-                                try {
-                                    var dEl = document.getElementById('distanceVal');
-                                    var tEl = document.getElementById('timeVal');
-                                    var cEl = document.getElementById('costVal');
-                                    if (dEl) dEl.textContent = distance;
-                                    if (tEl) tEl.textContent = timeText || '—';
-                                    if (cEl) cEl.textContent = price + ' ₾';
-                                } catch(e) {}
-     font-style: italic">Cost of delivery: %s rubles</span>';
+                var self = this;
 
-                                this._route = router.getPaths(); // Getting a collection of paths that make up the route.
+                ymaps.route([start, finish]).then(function (router) {
+                    if (deferred.promise().isRejected()) return;
 
-                                this._route.options.set({strokeWidth: 5, strokeColor: '0000ffff', opacity: 0.5});
-                                this._map.geoObjects.add(this._route); // Adding the route to the map.
-                                // Setting the balloon content for the starting and ending markers.
-                                this._startPoint.properties.set('balloonContentBody', startBalloon + message.replace('%s', price));
-                                this._finishPoint.properties.set('balloonContentBody', finishBalloon + message.replace('%s', price));
+                    // Remove previous route
+                    self.clearRoute();
 
-                                this._map.setBounds(this._route.getBounds(), {checkZoomRange: true}).then(function () {
-                                /**
-                                 * Opening the balloon over the delivery point.
-                                 * Comment this out if you don't want to show the balloon automatically.
-                                 * this._finishPoint.balloon.open().then(function(){
-                                 * this._finishPoint.balloon.autoPan();
-                                 * }, this);
-                                 */
-                                }, this);
-                                deferred.resolve();
-                            }
+                    // Save router
+                    self._router = router;
 
-                        }, function (err) {
-                            // If it is impossible to get directions via the specified points, the balloon with a warning will pop up.
-                            this._finishPoint.properties.set('balloonContentBody', "Can't build route");
-                            this._finishPoint.balloon.open();
-                            this._finishPoint.balloon.autoPan();
-                        }, this);
+                    // Compute stats
+                    var lengthMeters = router.getLength();
+                    var distanceText = ymaps.formatter.distance(lengthMeters);
+                    var kmRounded = Math.round(lengthMeters / 1000);
+                    var price = buildPrice(kmRounded);
+                    var seconds = getDurationSeconds(router, lengthMeters);
 
-                }
+                    // Draw route
+                    self._route = router.getPaths();
+                    self._route.options.set({
+                        strokeWidth: 5,
+                        strokeColor: '0000ffff',
+                        opacity: 0.5
+                    });
+                    self._map.geoObjects.add(self._route);
+
+                    // Update balloons
+                    var message =
+                        '<span>Distance: ' + distanceText + '.</span><br/>' +
+                        '<span style="font-weight: bold; font-style: italic">Cost of delivery: ' + price + ' ₾</span>';
+                    try {
+                        self._startPoint.properties.set('balloonContentBody', startBalloon + message);
+                        self._finishPoint.properties.set('balloonContentBody', finishBalloon + message);
+                    } catch (e) {}
+
+                    // Open finish balloon
+                    try {
+                        self._finishPoint.balloon.open().then(function () {
+                            self._finishPoint.balloon.autoPan();
+                        });
+                    } catch (e) {}
+
+                    // Update info panel
+                    updatePanel(distanceText, price, seconds);
+
+                    // Fit bounds
+                    try {
+                        self._map.setBounds(self._route.getBounds(), { checkZoomRange: true });
+                    } catch (e) {}
+
+                    deferred.resolve();
+                }, function () {
+                    // Route failure
+                    try {
+                        self._finishPoint.properties.set('balloonContentBody', "Can't build route");
+                        self._finishPoint.balloon.open();
+                        self._finishPoint.balloon.autoPan();
+                    } catch (e) {}
+                });
             },
 
             /**
-             * Click handler for the map. Getting coordinates of the point on the map and creating a marker.
-             * @param  {Object} event Event.
+             * Map click handler: first click sets start, second sets finish,
+             * subsequent clicks move the finish point.
+             * @param {Object} event
              */
             _onClick: function (event) {
-                if (this._startPoint) {
-                    this.setPoint("finish", event.get('coords'));
-                } else {
-                    this.setPoint("start", event.get('coords'));
-                }
-            },
-
-            /**
-             * Getting the marker coordinates and calling the geocoder for the starting point.
-             */
-            _onStartDragEnd: function () {
-                this.setPoint('start', this._startPoint.geometry.getCoordinates());
-            },
-
-            _onFinishDragEnd: function () {
-                this.setPoint('finish', this._finishPoint.geometry.getCoordinates());
-            },
-
-            /**
-             * Creating a route.
-             * @param {Number[]|String} startPoint Coordinates of the point or its address.
-             * @param {Number[]|String} finishPoint Coordinates of the point or its address.
-             */
-            setRoute: function (startPoint, finishPoint) {
+                var pos = event.get('coords');
                 if (!this._startPoint) {
-                    this._addNewPoint("start");
-                }
-                if (!this._finishPoint) {
-                    this._addNewPoint("finish");
-                }
-                if (typeof(startPoint) === "string" && typeof(finishPoint) === "string") {
-                    vow.all([this._geocode(startPoint), this._geocode(finishPoint)]).then(function (res) {
-                        this._setPointData("start", res[0][0], res[0][1]);
-                        this._setPointData("finish", res[1][0], res[1][1]);
-                        this._setupRoute();
-                    }, this);
-                } else if (typeof(startPoint) === "string") {
-                    vow.all([this._geocode(startPoint), this._reverseGeocode(finishPoint)]).then(function (res) {
-                        this._setPointData("start", res[0][0], res[0][1]);
-                        this._setPointData("finish", finishPoint, res[1]);
-                        this._setupRoute();
-                    }, this);
-                } else if (typeof(finishPoint) === "string") {
-                    vow.all([this._reverseGeocode(startPoint), this._geocode(finishPoint)]).then(function (res) {
-                        this._setPointData("start", startPoint, res[0]);
-                        this._setPointData("finish", res[1][0], res[1][1]);
-                        this._setupRoute();
-                    }, this);
+                    this.setPoint('start', pos);
+                } else if (!this._finishPoint) {
+                    this.setPoint('finish', pos);
                 } else {
-                    vow.all([this._reverseGeocode(startPoint), this._reverseGeocode(finishPoint)]).then(function (res) {
-                        this._setPointData("start", startPoint, res[0]);
-                        this._setPointData("finish", finishPoint, res[1]);
-                        this._setupRoute();
-                    }, this);
-
+                    this.setPoint('finish', pos);
                 }
+                this._setupRoute();
             }
         });
 
